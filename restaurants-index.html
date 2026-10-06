@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Restaurants</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#15110e">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#15110e;overflow:hidden;
+            font:14px/1.5 -apple-system,Roboto,system-ui,sans-serif;color:#8B949E}
+  /* The app sits in a clipping box. The frame is TALLER than the box and pulled
+     up by BANNER px, so Google's grey bar is cropped off the top. It lives in
+     script.google.com's own document, cross-origin, so there is no other way. */
+  #clip{position:fixed;inset:0;overflow:hidden}
+  #app{position:absolute;left:0;width:100%;border:0;display:block}
+  #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+       padding:28px;text-align:center}
+  #msg h1{color:#E8EAED;font-size:17px;font-weight:600;margin:0 0 6px}
+  #tok{width:100%;box-sizing:border-box;margin:16px 0 10px;padding:11px 12px;
+       background:#15110e;color:#E8EAED;border:1px solid #262D36;border-radius:8px;
+       font:13px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;text-align:center}
+  #tok:focus{outline:none;border-color:#cc7a1f}
+  #go{width:100%;padding:11px;background:#cc7a1f;color:#15110e;border:0;
+      border-radius:8px;font:600 15px/1 -apple-system,Roboto,system-ui,sans-serif;
+      -webkit-appearance:none}
+  #err{color:#E8698F;font-size:12px;min-height:16px;margin:8px 0 0}
+  /* !important on purpose: #msg is an ID selector setting display:flex, which
+     outranks a plain .hide class. Without this the token overlay stays on top
+     of the app and swallows every tap. */
+  .hide{display:none!important}
+  #tune{position:fixed;left:8px;right:8px;bottom:8px;z-index:9;
+        background:#161B22;border:1px solid #262D36;border-radius:10px;
+        padding:8px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #tunetip{color:#8B949E;font-size:12px;line-height:1.35;margin:2px 4px 8px;text-align:center}
+  #tunetip b{color:#E8EAED;font-weight:600}
+  #tunerow{display:flex;gap:6px;align-items:center}
+  #tune button{flex:1;padding:10px 0;background:#1B2230;color:#E8EAED;border:1px solid #262D36;
+               border-radius:8px;font:600 15px/1 -apple-system,Roboto,system-ui,sans-serif;
+               -webkit-appearance:none}
+  #tune #done{background:#cc7a1f;color:#15110e;border-color:#cc7a1f}
+  #tune span{flex:0 0 52px;text-align:center;color:#E8EAED;
+             font:600 14px/1 ui-monospace,SFMono-Regular,Menlo,monospace}
+</style>
+</head>
+<body>
+
+<div id="clip" class="hide"><iframe id="app" title="Restaurants"></iframe></div>
+
+<div id="tune" class="hide">
+  <div id="tunetip">
+    This trims the top of the screen to hide Google's grey banner.<br>
+    Tap <b>-8</b> until the app's own header sits at the very top,
+    then <b>+2</b> until no grey strip is left above it.
+  </div>
+  <div id="tunerow">
+    <button type="button" data-d="-8">-8</button>
+    <button type="button" data-d="-2">-2</button>
+    <span id="tval">46</span>
+    <button type="button" data-d="2">+2</button>
+    <button type="button" data-d="8">+8</button>
+    <button type="button" id="done">Done</button>
+  </div>
+</div>
+
+<div id="msg">
+  <form id="form" style="width:100%;max-width:340px">
+    <h1>Restaurants</h1>
+    <p style="margin:0">Paste your token once. This device remembers it.</p>
+    <input id="tok" type="text" inputmode="text" autocomplete="off"
+           autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="token">
+    <button id="go" type="submit">Open</button>
+    <p id="err"></p>
+  </form>
+</div>
+
+<script>
+/* Apps Script puts a "created by another user" banner in the top-level document
+   on script.google.com. The app runs in a cross-origin iframe below it and
+   cannot touch it. Wrapping it in a page WE own lets us crop that banner and,
+   with the manifest, install it as a standalone app instead of a browser tab. */
+
+var TOKEN_KEY = 'appToken:restaurants';   /* per app: every wrapper on this site shares one localStorage */
+var EXEC = 'https://script.google.com/macros/s/AKfycby5eqSHabsb_t2XGo7ari56KtT3CGcsR67WOYGLWp4uRQfnOVAI-hL1lkGwC82_k-sgBQ/exec';
+
+/* Banner height in CSS pixels. NOT the same on every device: phone and desktop
+   differ and Google changes it. So it is tunable at runtime and the tuned value
+   is stored, because the installed app launches start_url "./" with no
+   parameters at all. */
+var BANNER_DEFAULT = 46;
+var BANNER = BANNER_DEFAULT;
+var BANNER_SET = false;
+/* Note the isFinite check: +null is 0, so a plain ">= 0" test on an unset key
+   silently sets the crop to zero and the banner comes back. */
+try {
+  var b = localStorage.getItem('appBanner');
+  if (b !== null && isFinite(+b) && +b >= 0) { BANNER = +b; BANNER_SET = true; }
+} catch (e) {}
+
+var clip = document.getElementById('clip');
+var app  = document.getElementById('app');
+var hash = {}, TOKEN = '';
+
+/* Read BOTH the query string and the fragment. Both, because some mobile paste
+   targets percent-encode a "#" into the path, which is a 404 on a static host:
+   anything that must survive a bad paste has to work as "?" too. The token is
+   the exception and stays out of the query string entirely. */
+function readHash() {
+  hash = {};
+  function eat(s) {
+    s.replace(/^[?#]/, '').split('&').forEach(function (kv) {
+      var i = kv.indexOf('=');
+      if (i > 0) hash[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1));
+    });
+  }
+  eat(location.search);
+  eat(location.hash);
+  if (hash.banner !== undefined && +hash.banner >= 0) setBanner(+hash.banner);
+}
+
+function setBanner(n) {
+  BANNER = Math.max(0, Math.min(200, n | 0));
+  BANNER_SET = true;
+  try { localStorage.setItem('appBanner', String(BANNER)); } catch (e) {}
+}
+
+/* The token is remembered on this origin after the first visit. It has to be:
+   once installed, the manifest launches start_url "./" with NO fragment, so a
+   fragment-only token would work exactly once and the home screen icon would
+   open to nothing afterwards. Storage can be empty or throw (private window,
+   cleared data), so every access is guarded. */
+function loadToken() {
+  readHash();
+  if (hash.t !== undefined) {
+    TOKEN = hash.t;
+    try { TOKEN ? localStorage.setItem(TOKEN_KEY, TOKEN) : localStorage.removeItem(TOKEN_KEY); }
+    catch (e) {}
+    return;
+  }
+  try { TOKEN = localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { TOKEN = ''; }
+}
+loadToken();
+
+/* The phone's own date. The server cannot know where you are: at 9pm in
+   California, New York has already rolled over, and anything logged lands on
+   the wrong day. Drop this only if the app has no notion of "today". */
+function localDate() {
+  var d = new Date(), p = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+function src() {
+  var extra = '';
+  Object.keys(hash).forEach(function (k) {
+    if (['t', 'd', 'e', 'banner', 'tune', 'reset'].indexOf(k) < 0) extra += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(hash[k]);
+  });
+  return EXEC + '?t=' + encodeURIComponent(TOKEN)
+       + '&d=' + localDate()
+       + '&e=1'                        /* tells the app it is wrapped */
+       + extra;                        /* e.g. ?walk=1 passes through to the app */
+}
+
+/* The whole trick, in two lines: the frame is BANNER px taller than the
+   viewport and sits BANNER px above it. */
+function size() {
+  app.style.top    = (-BANNER) + 'px';
+  app.style.height = (window.innerHeight + BANNER) + 'px';
+}
+
+/* ?reset=1 forgets the stored token. Query string, not fragment, on purpose:
+   some mobile paste targets turn "#" into part of the path, which is a 404 on
+   GitHub Pages. Everything here has to survive that. */
+if (/[?&]reset=1\b/.test(location.search)) {
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  TOKEN = '';
+}
+
+function start() {
+  if (!TOKEN) {
+    document.getElementById('msg').classList.remove('hide');
+    clip.classList.add('hide');
+    setTimeout(function () { try { document.getElementById('tok').focus(); } catch (e) {} }, 60);
+    return;
+  }
+  document.getElementById('msg').classList.add('hide');
+  clip.classList.remove('hide');
+  size();
+  if (app.src !== src()) app.src = src();
+  if (window.showTune) showTune(hash.tune === '1');
+}
+
+/* Typing the token beats putting it in the URL: no fragment to lose, no
+   encoding to mangle, entered once per device. */
+document.getElementById('form').addEventListener('submit', function (ev) {
+  ev.preventDefault();
+  var v = String(document.getElementById('tok').value || '').trim().replace(/^#?t=/, '');
+  var err = document.getElementById('err');
+  if (!v) { err.textContent = 'Paste the token first.'; return; }
+  if (!/^[A-Za-z0-9_-]{16,}$/.test(v)) {
+    err.textContent = 'That does not look like the token. It is one long run of letters and numbers.';
+    return;
+  }
+  err.textContent = '';
+  TOKEN = v;
+  try { localStorage.setItem(TOKEN_KEY, TOKEN); } catch (e) {}
+  start();
+});
+
+/* The tuner adjusts the crop live. Nothing reloads, so the app keeps its state
+   while you nudge: what you see is what the installed app will use. It opens BY
+   ITSELF the first time on a device, because the banner is not the same height
+   everywhere and the alternative was hand-editing a URL on a phone. Once a
+   value is saved it never appears again unless ?tune=1 asks for it. */
+(function () {
+  var bar = document.getElementById('tune'), val = document.getElementById('tval');
+  function show() { val.textContent = BANNER; }
+  window.showTune = function (force) {
+    if (!force && BANNER_SET) return;
+    bar.classList.remove('hide');
+    show();
+  };
+  bar.addEventListener('click', function (ev) {
+    var t = ev.target;
+    if (t.id === 'done') {
+      /* Persist even if nothing was nudged, so the tuner does not reappear on
+         every launch for a device whose banner really is the default height.
+         Then drop every parameter and land on the URL the home screen icon
+         uses, so what was just tuned is what a real launch looks like. */
+      setBanner(BANNER);
+      location.href = location.pathname;
+      return;
+    }
+    var d = t.getAttribute && t.getAttribute('data-d');
+    if (!d) return;
+    setBanner(BANNER + (+d));
+    show(); size();
+  });
+})();
+
+addEventListener('resize', size);
+addEventListener('orientationchange', function () { setTimeout(size, 150); });
+/* Changing the fragment does not reload the page, so re-read it by hand. This
+   is how a rotated token gets swapped in without clearing site data. */
+addEventListener('hashchange', function () { loadToken(); start(); });
+start();
+</script>
+</body>
+</html>
